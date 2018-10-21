@@ -1,0 +1,1289 @@
+Microsoft (R) Macro Assembler Version 14.10.25019.0	    06/25/17 22:29:25
+Debug\Projekat.asm					     Page 1 - 1
+
+
+				INCLUDE Irvine32.inc
+			      C ; Include file for Irvine32.lib             (Irvine32.inc)
+			      C 
+			      C ;OPTION CASEMAP:NONE		; optional: make identifiers case-sensitive
+			      C 
+			      C INCLUDE SmallWin.inc		; MS-Windows prototypes, structures, and constants
+			      C .NOLIST
+			      C .LIST
+			      C 
+			      C INCLUDE VirtualKeys.inc
+			      C ; VirtualKeys.inc
+			      C .NOLIST
+			      C .LIST
+			      C 
+			      C 
+			      C .NOLIST
+			      C .LIST
+			      C 
+				INCLUDE macros.inc
+			      C .NOLIST
+			      C .LIST
+			      C 
+
+ 00000000			.const
+ = 00030D40			BUFFER_SIZE = 200000 
+ = 00010000			MAX_PICTURE_SIZE = 65536	;// 256*256
+ = 00000100			INITIAL_T = 256;	;// Pocetna vrednost praga binarizacije
+ = 00000001			PRAG = 1;	;// Prag izmedju dve susedne vrednosti T
+
+ 00000000			.data
+ 00000000  00030D40 [		buffer BYTE BUFFER_SIZE DUP(?)
+	    00
+	   ]
+ 00030D40  00000050 [		filename    BYTE 80 DUP(0)
+	    00
+	   ]
+ 00030D90 00000000		fileHandle  HANDLE ?
+
+ 00030D94  00030D40 [		outbuffer BYTE BUFFER_SIZE DUP(?)
+	    00
+	   ]
+ 00061AD4  00000050 [		outfilename BYTE 80 DUP(0)
+	    00
+	   ]
+ 00061B24 00000000		outfileHandle HANDLE ?
+ 00061B28 00000000		outindex DWORD 0
+
+				;// Parametri slike:
+ 00061B2C 5032			P2 WORD 5032h
+ 00061B2E 00000000		velicinaBafera DWORD ?
+ 00061B32 0000			M WORD ?	;//Dimenzije slike su: M i N
+ 00061B34 0000			N WORD ?
+ 00061B36 0000			Lmax WORD ?	;//Maksimalna vrednost osvetljaja
+
+				;// Promenljive
+ 00061B38 00000000		pokazivacNiza DWORD 0;// Promenljivu koristimo kao index.
+ 00061B3C 00000000		suma DWORD 0;// Promenljivu koristimo u proceduri ObradaSlike.
+ 00061B40 00000000		suma1 DWORD 0;// Promenljivu koristimo u proceduri ObradaSlike.
+ 00061B44  00000100 [		histogram WORD 256 DUP(0);// Vrednost clana niza zavisi od broja ponavljanja u nizu pixeli.
+	    0000
+	   ]
+ 00061D44  00010000 [		pixeli WORD MAX_PICTURE_SIZE DUP(?);// Niz koji koristimo za smestanje vrednosti iz buffera. Kada naidjemo na EOL,
+	    0000
+	   ]
+								                   ;// u niz upisujemo vrednost -1, zbog toga je niz tipa WORD.
+								                  ;// U suprotnom, ako bismo imali BYTE, vrednost -1 bila bi ista kao vrednost 25
+ 00081D44 0100			T WORD INITIAL_T;// Prag binarizacije
+ 00081D46 0000			T1 WORD 0;// Pomocna promenjljiva
+ 00081D48 0000			T2 WORD 0;// Pomocna promenjljiva
+ 00081D4A 0000			T3 WORD 0;// Pomocna promenjljiva
+
+
+ 00081D4C  00000004 [		broj BYTE 4 DUP(?)
+	    00
+	   ]
+ 00081D50 0000			cifra WORD 0;// Odredjuje da li je broj jednocifrena, dvocifrena ili trocifrena.
+ 00081D52 00000000		brojac DWORD 0
+
+				;//										Ovde pocinje kod.
+
+ 00000000			.code
+
+ 00000000			close_file PROC
+ 00000000  A1 00030D90 R	mov	eax,fileHandle
+ 00000005  E8 00000000 E	call CloseFile
+				exit
+ 0000000A  6A 00	   *	    push   +000000000h
+ 0000000C  E8 00000000 E   *	    call   ExitProcess
+ 00000011			close_file ENDP
+
+				;//										PROCEDURA: Citaj
+				;// Pretvara ucitanu vrednost ciji je pocetni clan buffer[pokazivacNiza] u INT.
+				;// Po izlasku iz procedure vrednost je sacuvana u EAX, dok buffer[pokazivacNiza] pokazuje na 20h(space).
+
+ 00000011			Citaj PROC STDCALL USES ebx esi ecx
+
+ 00000011  53		   *	    push   ebx
+ 00000012  56		   *	    push   esi
+ 00000013  51		   *	    push   ecx
+ 00000014  BA 00000000 R	mov edx,OFFSET buffer;
+ 00000019  33 C0		xor eax,eax
+ 0000001B  33 C9		xor ecx,ecx
+ 0000001D  33 DB		xor ebx,ebx
+
+ 0000001F  03 15 00061B38 R	add edx,pokazivacNiza
+
+				;// Petlja ce se obradjivati sve dok ne naidjemo na razmak ili novi red.
+
+ 00000025			Ucitavanje:
+ 00000025  8A 02		mov al,[edx]
+ 00000027  88 83 00081D4C R	mov broj[ebx],al
+ 0000002D  42			inc edx
+ 0000002E  FF 05 00061B38 R	inc pokazivacNiza
+ 00000034  43			inc ebx
+ 00000035  8A 02		mov al,[edx]
+ 00000037  3C 20		cmp al,20h
+ 00000039  74 04		je Pretvaranje
+ 0000003B  3C 0A		cmp al,0ah
+ 0000003D  75 E6		jne Ucitavanje
+
+ 0000003F			Pretvaranje:
+ 0000003F  C6 83 00081D4C R	mov broj[ebx],3;// Kraj stringa u ASCII je 3h.
+	   03
+										
+
+				;// ParseDecimal trazi da EDX i ECX budu popunjeni ovako.
+ 00000046  BA 00081D4C R	mov edx,OFFSET broj
+ 0000004B  8B CB		mov ecx,ebx
+ 0000004D  E8 00000000 E	call ParseDecimal32
+
+				;// Pre povratka iz rutine vracamo offset buffer-a u EDX.
+ 00000052  BA 00000000 R	mov edx,OFFSET buffer
+				ret
+ 00000057  59		   *	    pop    ecx
+ 00000058  5E		   *	    pop    esi
+ 00000059  5B		   *	    pop    ebx
+ 0000005A  C3		   *	    ret    00000h
+ 0000005B			Citaj ENDP
+
+				;//										PROCEDURA: NadjiPrag
+				;// Pretvara vrednost ciji je pocetni clan buffer[pokazivacNiza] u INT.
+				;// Po izlasku iz procedure vrednost je sacuvana u EAX, dok buffer[pokazivacNiza] pokazuje na 20h(space).
+
+ 0000005B			NadjiPrag PROC STDCALL USES ebx edi ecx eax
+
+ 0000005B  53		   *	    push   ebx
+ 0000005C  57		   *	    push   edi
+ 0000005D  51		   *	    push   ecx
+ 0000005E  50		   *	    push   eax
+ 0000005F  33 FF		xor edi,edi
+ 00000061  33 C0		xor eax,eax
+ 00000063  33 DB		xor ebx,ebx
+ 00000065  33 D2		xor edx,edx
+
+ 00000067  66| C7 05		mov T1,0
+	   00081D46 R
+	   0000
+ 00000070  66| C7 05		mov T2,0
+	   00081D48 R
+	   0000
+ 00000079  C7 05 00061B3C R	mov suma,0
+	   00000000
+ 00000083  C7 05 00061B40 R	mov suma1,0
+	   00000000
+
+ 0000008D			Manji: ;// Racunamo srednju vrednost osvetljaja za one piksele koji su ispod praga T.
+
+ 0000008D  8B C7		mov eax, edi
+ 0000008F  66| 3B 05		cmp ax, T
+	   00081D44 R
+ 00000096  7D 24		jge Veci1
+ 00000098  66| 8B 87		mov ax, histogram[edi]
+	   00061B44 R
+ 0000009F  01 05 00061B40 R	add suma1, eax
+ 000000A5  66| 8B 87		mov ax, histogram[edi]
+	   00061B44 R
+ 000000AC  8B DF		mov ebx, edi
+ 000000AE  66| F7 EB		imul bx
+ 000000B1  01 05 00061B3C R	add suma, eax
+ 000000B7  83 C7 02		add edi, 2
+
+ 000000BA  EB D1		jmp Manji
+
+ 000000BC			Veci1:	;// Racunamo srednju vrednost osvetljaja za one piksele koji su ispod praga T.
+
+ 000000BC  A1 00061B3C R	mov eax, suma
+ 000000C1  8B 1D 00061B40 R	mov ebx, suma1
+ 000000C7  66| 83 FB 00		cmp bx, 0
+ 000000CB  74 14		je SveNule
+ 000000CD  66| F7 FB		idiv bx
+ 000000D0  33 D2		xor edx,edx
+ 000000D2  66| BB 0002		mov bx,2
+ 000000D6  66| F7 FB		idiv bx
+ 000000D9  66| A3		mov T1, ax
+	   00081D46 R
+ 000000DF  EB 15		jmp Petlja
+
+ 000000E1			SveNule: ;// U slucaju da su svi pikseli jednaki 0 ne sme da se deli sa 0.
+ 000000E1  33 D2		xor edx,edx
+ 000000E3  66| A1		mov ax, T
+	   00081D44 R
+ 000000E9  66| BB 0002		mov bx, 2
+ 000000ED  66| F7 FB		idiv bx
+ 000000F0  66| A3		mov T1, ax
+	   00081D46 R
+
+ 000000F6			Petlja:
+ 000000F6  C7 05 00061B40 R	mov suma1,0
+	   00000000
+ 00000100  C7 05 00061B3C R	mov suma, 0
+	   00000000
+
+ 0000010A			Veci:
+
+ 0000010A  66| 8B 87		mov ax, histogram[edi]
+	   00061B44 R
+ 00000111  01 05 00061B40 R	add suma1, eax
+ 00000117  66| 8B 87		mov ax, histogram[edi]
+	   00061B44 R
+ 0000011E  8B DF		mov ebx, edi
+ 00000120  66| F7 EB		imul bx
+ 00000123  01 05 00061B3C R	add suma, eax
+ 00000129  83 C7 02		add edi, 2
+
+
+
+ 0000012C  81 FF 00000200	cmp edi,512
+ 00000132  7C D6		jl Veci
+
+ 00000134			Dalje: ;// Nastavljamo.
+ 00000134  33 D2		xor edx,edx
+ 00000136  A1 00061B3C R	mov eax, suma
+ 0000013B  8B 15 00061B3C R	mov edx, suma
+ 00000141  C1 EA 10		shr edx,16
+ 00000144  8B 1D 00061B40 R	mov ebx, suma1
+ 0000014A  F7 F3		div ebx
+ 0000014C  66| BB 0002		mov bx,2
+ 00000150  33 D2		xor edx,edx
+ 00000152  66| F7 F3		div bx
+ 00000155  66| A3		mov T2, ax
+	   00081D48 R
+
+
+ 0000015B  33 D2		xor edx,edx
+ 0000015D  66| 03 05		add ax, T1
+	   00081D46 R
+ 00000164  66| BB 0002		mov bx, 2
+ 00000168  66| F7 F3		div bx
+ 0000016B  66| A3		mov T3, ax
+	   00081D4A R
+
+				ret
+ 00000171  58		   *	    pop    eax
+ 00000172  59		   *	    pop    ecx
+ 00000173  5F		   *	    pop    edi
+ 00000174  5B		   *	    pop    ebx
+ 00000175  C3		   *	    ret    00000h
+ 00000176			NadjiPrag ENDP
+
+				;//										PROCEDURA: Ucitavanje
+				;// Otvaramo sliku i formiramo izlaznu sliku uz provere ispravnosti.
+				;// Ucitavamo parametre M,N,Lmax i komentar.
+				;// Prepisujemo prva cetiri reda u outbuffer.
+				;// Po izlasku iz procedure vrednost buffer[pokazivacNiza] pokazuje na prvi pixel,
+				;// dok outindex pokazuje na index outbuffer-a od kojeg upisujemo promenjene pixele u proceduri IzlazniFajl.
+
+ 00000176			Ucitavanje PROC
+ 00000176  BA 00000000 R	mov edx, OFFSET buffer
+ 0000017B  33 DB		xor ebx,ebx
+ 0000017D  8B DA		mov ebx,edx
+ 0000017F  03 1D 00061B38 R	add ebx,pokazivacNiza
+ 00000185  8A 23		mov ah,[ebx]
+ 00000187  43			inc ebx
+ 00000188  8A 03		mov al,[ebx]
+ 0000018A  66| 3B 05		cmp ax,P2
+	   00061B2C R
+ 00000191  74 16		je DrugiRed
+				mWrite <"Format slike je pogresan.">
+ 00081D56		     1		.data		
+ 00081D56 46 6F 72 6D 61     1		??0000 BYTE "Format slike je pogresan.",0	
+	   74 20 73 6C 69
+	   6B 65 20 6A 65
+	   20 70 6F 67 72
+	   65 73 61 6E 2E
+	   00
+ 00000193		     1		.code
+ 00000193  52		     1		push	edx
+ 00000194  BA 00081D56 R     1		mov	edx,OFFSET ??0000
+ 00000199  E8 00000000 E     1		call	WriteString
+ 0000019E  5A		     1		pop	edx
+ 0000019F  E8 00000000 E	call WriteWindowsMsg
+ 000001A4  E8 FFFFFE57		call	close_file
+
+ 000001A9			DrugiRed:
+ 000001A9  83 05 00061B38 R	add pokazivacNiza,3; // Sada pokazivacNiza pokazuje na #.
+	   03
+ 000001B0  83 C3 02		add ebx,2
+				;// Prelazimo preko komentara.
+ 000001B3			Komentar:
+ 000001B3  FF 05 00061B38 R	inc pokazivacNiza
+ 000001B9  43			inc ebx
+ 000001BA  8A 13		mov dl,[ebx]
+ 000001BC  80 FA 0A		cmp dl,0ah
+ 000001BF  75 F2		jne Komentar
+
+ 000001C1			TreciRed:;//Treci red
+ 000001C1  FF 05 00061B38 R	inc pokazivacNiza
+ 000001C7  E8 FFFFFE45		call Citaj;// Ucitali smo M.
+ 000001CC  66| A3		mov M,ax
+	   00061B32 R
+ 000001D2  FF 05 00061B38 R	inc pokazivacNiza
+ 000001D8  E8 FFFFFE34		call Citaj
+ 000001DD  66| A3		mov N,ax;// Ucitali smo N.
+	   00061B34 R
+ 000001E3  FF 05 00061B38 R	inc pokazivacNiza
+ 000001E9  E8 FFFFFE23		call Citaj
+ 000001EE  66| A3		mov Lmax,ax;// Ucitali smo Lmax.
+	   00061B36 R
+
+				mWrite "Unesite zeljeno ime izlaznog fajla: "
+ 00081D70		     1		.data		
+ 00081D70 55 6E 65 73 69     1		??0001 BYTE "Unesite zeljeno ime izlaznog fajla: ",0	
+	   74 65 20 7A 65
+	   6C 6A 65 6E 6F
+	   20 69 6D 65 20
+	   69 7A 6C 61 7A
+	   6E 6F 67 20 66
+	   61 6A 6C 61 3A
+	   20 00
+ 000001F4		     1		.code
+ 000001F4  52		     1		push	edx
+ 000001F5  BA 00081D70 R     1		mov	edx,OFFSET ??0001
+ 000001FA  E8 00000000 E     1		call	WriteString
+ 000001FF  5A		     1		pop	edx
+ 00000200  BA 00061AD4 R	mov edx,OFFSET outfilename
+ 00000205  B9 00000050		mov ecx,SIZEOF outfilename
+ 0000020A  E8 00000000 E	call ReadString
+
+ 0000020F  E8 00000000 E	call CreateOutputFile
+ 00000214  A3 00061B24 R	mov  outfileHandle,eax
+
+				;// Prepisujemo prva cetiri reda u izlazni fajl.
+				;// Po izlasku iz petlje rucno upisujemo buffer[0], jer za vrednost ECX=0 nismo prosli kroz petlju.
+ 00000219  8B 0D 00061B38 R	mov ecx,pokazivacNiza
+ 0000021F			Prepisivanje:
+ 0000021F  8A 81 00000000 R	mov al,buffer[ecx]
+ 00000225  88 81 00030D94 R	mov outbuffer[ecx],al
+ 0000022B  E2 F2		loop Prepisivanje
+
+ 0000022D  A0 00000000 R	mov al,buffer[0]
+ 00000232  88 81 00030D94 R	mov outbuffer[ecx],al
+
+ 00000238  FF 05 00061B38 R	inc pokazivacNiza;// pokazivacNiza pokazuje na prvi pixel.
+ 0000023E  A1 00061B38 R	mov eax,pokazivacNiza
+ 00000243  A3 00061B28 R	mov outindex,eax
+
+ 00000248  C3			ret
+ 00000249			Ucitavanje ENDP
+
+				;//										PROCEDURA: FormiranjeHistograma
+				;// Koristimo proceduru Citaj da bismo dobili INT vrednosti, koje upisujemo u niz pixeli[].
+				;// Kada naidjemo na EOL, upisujemo vrednost -1.
+				;// Po izlasku iz procedure niz pixeli[] je popunjen vrednostima pixel-a originalne slike.
+
+ 00000249			FormiranjeHistograma PROC
+
+ 00000249  33 DB		xor ebx,ebx;// Koristimo ga kao brojac
+ 0000024B  33 C0		xor eax,eax
+ 0000024D  66| A1		mov ax, M
+	   00061B32 R
+ 00000253  66| F7 25		mul N
+	   00061B34 R
+ 0000025A  8B C8		mov ecx,eax
+
+ 0000025C			Petlja:
+ 0000025C  E8 FFFFFDB0		call Citaj
+ 00000261  66| 89 83		mov pixeli[ebx],ax;// Upisujemo svaki pixel slike.
+	   00061D44 R
+ 00000268  6B C0 02		imul eax,2;// EAX sada postaje indeks histograma. Mnozimo sa 2,jer je histogram 16 bita.
+ 0000026B  8B F0		mov esi,eax
+ 0000026D  66| FF 86		inc histogram[esi]
+	   00061B44 R
+ 00000274  FF 05 00061B38 R	inc pokazivacNiza
+ 0000027A  03 15 00061B38 R	add edx,pokazivacNiza
+ 00000280  8B 3A		mov edi,[edx]
+ 00000282  8B D7		mov edx,edi
+ 00000284  80 FA 0A		cmp dl,0ah;// Proveravamo da li nam pokazivacNiza trenutno pokazuje na EOL.
+ 00000287  75 11		jnz Nastavi
+ 00000289  43			inc ebx;// Povecavamo ebx za 2 jer je on indeks pixel-a, koji su WORD.
+ 0000028A  43			inc ebx
+ 0000028B  66| C7 83		mov pixeli[ebx],-1
+	   00061D44 R
+	   FFFF
+ 00000294  FF 05 00061B38 R	inc pokazivacNiza;// Pomeramo pokazivacNiza na prvu cifru narednog pixela 
+ 0000029A			Nastavi:
+ 0000029A  43			inc ebx
+ 0000029B  43			inc ebx
+
+ 0000029C  E2 BE		loop Petlja
+
+ 0000029E  C3			ret
+ 0000029F			FormiranjeHistograma ENDP
+
+				;//										ObradaSlike
+				;// Koristimo formulu za promenu vrednosti pixel-a.
+				;// Vrednost histogram[edi] jednaka je broju ponavljanja pixel-a EDI. Njega prvo dodajemo sumi,
+				;// a zatim ga menjamo.
+				;// Po izlasku iz procedure u nizu histogram[] se nalaze nove vrednosti pixel-a.
+
+ 0000029F			ObradaSlike PROC
+
+
+
+ 0000029F  33 FF		xor edi,edi
+ 000002A1  33 C9		xor ecx,ecx
+ 000002A3  33 C0		xor eax,eax
+ 000002A5  33 DB		xor ebx,ebx
+ 000002A7  33 D2		xor edx,edx
+
+ 000002A9			Obrada:
+
+ 000002A9  E8 FFFFFDAD		call NadjiPrag
+
+ 000002AE  66| 8B 1D		mov bx, T3
+	   00081D4A R
+ 000002B5  66| 3B 1D		cmp bx, T
+	   00081D44 R
+ 000002BC  7D 22		jge Raste
+ 000002BE			Opada:
+ 000002BE  66| 29 1D		sub T, bx
+	   00081D44 R
+ 000002C5  66| 8B 1D		mov bx,T
+	   00081D44 R
+ 000002CC  66| A1		mov ax, T3
+	   00081D4A R
+ 000002D2  66| A3		mov T, ax
+	   00081D44 R
+ 000002D8  66| 83 FB 01		cmp bx, PRAG
+ 000002DC  7D CB		jge Obrada
+ 000002DE  EB 19		jmp Kraj
+ 000002E0			Raste:
+ 000002E0  66| 2B 1D		sub bx, T
+	   00081D44 R
+ 000002E7  66| A1		mov ax, T3
+	   00081D4A R
+ 000002ED  66| A3		mov T, ax
+	   00081D44 R
+ 000002F3  66| 83 FB 01		cmp bx, PRAG
+ 000002F7  7D B0		jge Obrada
+
+ 000002F9			Kraj:
+
+ 000002F9  C3			ret
+ 000002FA			ObradaSlike ENDP
+
+
+
+				;//										IzlazniFajl
+				;// Menjamo niz pixeli[] novim vrednostima iz histogram-a.
+				;// Popunjavamo outbuffer[] pocevsi od vrednosti outindex, a zatim outbuffer[] saljemo
+				;// na izlazni fajl.
+
+ 000002FA			IzlazniFajl PROC
+ 000002FA  BA 00061D44 R	mov edx,OFFSET pixeli
+ 000002FF  33 DB		xor ebx,ebx
+ 00000301  33 D2		xor edx,edx
+ 00000303  33 FF		xor edi, edi
+
+ 00000305  66| A1		mov ax,M
+	   00061B32 R
+ 0000030B  66| F7 25		mul N
+	   00061B34 R
+ 00000312  A3 00081D52 R	mov brojac,eax;// Koristimo brojac,jer zelimo da se osiguramo da necemo obraditi vrednosti koje ukazuju na EOL.
+
+				;// Menjamo niz pixeli[] novim vrednostima iz histogram-a.
+ 00000317			NoviPixeli:
+ 00000317  81 FF 00020000	cmp edi, 131072
+ 0000031D  7F 4E		jg Gotovo
+ 0000031F  66| 8B 87		mov ax,pixeli[edi]
+	   00061D44 R
+ 00000326  66| 83 F8 FF		cmp ax,-1
+ 0000032A  74 2A		je VrednostNovogReda;// Ovim smo sigurni da smo obradili samo pixele, a ne i vrednosti koje ukazuju na EOL.
+ 0000032C  6B C0 02		imul eax,2
+ 0000032F  66| B9 0064		mov cx,100
+ 00000333  66| 39 8F		cmp pixeli[edi], cx
+	   00061D44 R
+ 0000033A  7F 0D		jg  Belo
+ 0000033C  66| BA 0000		mov dx,0
+ 00000340  66| 89 97		mov pixeli[edi],dx
+	   00061D44 R
+ 00000347  EB 13		jmp SledeciPix
+ 00000349			Belo:
+ 00000349  66| BA 00FF		mov dx,255
+ 0000034D  66| 89 97		mov pixeli[edi],dx
+	   00061D44 R
+ 00000354  EB 06		jmp SledeciPix
+
+
+ 00000356			VrednostNovogReda:
+ 00000356  FF 05 00081D52 R	inc brojac
+ 0000035C			SledeciPix:
+ 0000035C  47			inc edi
+ 0000035D  47			inc edi
+ 0000035E  FF 0D 00081D52 R	dec brojac
+ 00000364  83 3D 00081D52 R	cmp brojac, 0
+	   00
+ 0000036B  75 AA		jne NoviPixeli
+
+				;// Ponovo podesavamo vrednosti brojaca i cistimo registre.
+				;// Promenljive M i N koristimo za smestanje vrednosti 100 i 10, jer nam dimenzije slike vise nisu potrebne.
+
+ 0000036D			Gotovo:
+ 0000036D  66| A1		mov ax,M
+	   00061B32 R
+ 00000373  66| F7 2D		imul N
+	   00061B34 R
+ 0000037A  A3 00081D52 R	mov brojac,eax
+ 0000037F  33 C0		xor eax,eax
+ 00000381  33 DB		xor ebx,ebx;// EBX je indeks od outbuffer BYTE, dok je EDI indeks od pixeli WORD.
+ 00000383  33 FF		xor edi,edi
+ 00000385  8B 1D 00061B28 R	mov ebx,outindex
+ 0000038B  66| C7 05		mov M,100;//Ne moze neposredno div 100,i div 10 pa smestamo u M i N.
+	   00061B32 R
+	   0064
+ 00000394  66| C7 05		mov N,10
+	   00061B34 R
+	   000A
+
+				;// Petlja NoviIzlazni popunjava outbuffer novim vrednostima niza pixeli[].
+				;// Da bismo popunili outbuffer moramo pretvoriti INT u CHAR, tako da vrsimo proveru broja cifara INT,
+				;// a zatim na tu vrednost dodajemo 30h i tako dobijamo ascii vrednost broja.
+				;// Ako naidjemo na -1, signaliziramo kraj reda i upisujemo 0Ah u outbuffer. U tom slucaju brojac se ne smanjuje.
+ 0000039D			NoviIzlazni:
+
+ 0000039D  66| 8B 87		mov ax,pixeli[edi]
+	   00061D44 R
+ 000003A4  66| 83 F8 FF		cmp ax,-1
+ 000003A8  0F 84 000000A9	je KrajReda
+
+ 000003AE  33 D2		xor edx,edx
+ 000003B0  66| F7 35		div M
+	   00061B32 R
+ 000003B7  66| 83 F8 00		cmp ax,0;// Proveravamo da li je broj dvocifren.
+ 000003BB  74 2E		je Dvocifren
+ 000003BD			Trocifren:;// Trocifreni broj
+ 000003BD  66| C7 05		mov cifra,3
+	   00081D50 R
+	   0003
+ 000003C6  04 30		add al,30h
+ 000003C8  A2 00081D4C R	mov broj[0],al;// Stotine
+ 000003CD  66| 8B C2		mov ax,dx
+ 000003D0  33 D2		xor edx,edx
+ 000003D2  66| F7 35		div N
+	   00061B34 R
+ 000003D9  04 30		add al,30h
+ 000003DB  80 C2 30		add dl,30h
+ 000003DE  A2 00081D4D R	mov broj[1],al;// Desetice
+ 000003E3  88 15 00081D4E R	mov broj[2],dl;// Jedinice
+ 000003E9  EB 3C		jmp Ispis
+
+ 000003EB			Dvocifren:;// Dvocifreni broj
+ 000003EB  66| C7 05		mov cifra,2
+	   00081D50 R
+	   0002
+ 000003F4  8A C2		mov al,dl
+ 000003F6  33 D2		xor edx,edx
+ 000003F8  66| F7 35		div N
+	   00061B34 R
+ 000003FF  3C 00		cmp al,0
+ 00000401  74 12		je Jednocifren
+ 00000403  04 30		add al,30h
+ 00000405  80 C2 30		add dl,30h
+ 00000408  A2 00081D4C R	mov broj[0],al;// Desetice
+ 0000040D  88 15 00081D4D R	mov broj[1],dl;// Jedinice
+ 00000413  EB 12		jmp Ispis
+
+ 00000415			Jednocifren:;// Jednocifreni broj
+ 00000415  66| C7 05		mov cifra,1
+	   00081D50 R
+	   0001
+ 0000041E  80 C2 30		add dl,30h
+ 00000421  88 15 00081D4C R	mov broj[0],dl;// Jedinice
+
+				;// Petlja kojom popunjavamo outbuffer.
+ 00000427			Ispis:
+ 00000427  33 D2		xor edx,edx
+ 00000429  33 C0		xor eax,eax
+ 0000042B  8B C7		mov eax,edi;// EAX sada cuva index od pixeli[] dok koristimo EDI za index niza broj.
+ 0000042D  33 FF		xor edi,edi
+ 0000042F			Dodavanje:
+ 0000042F  8A 97 00081D4C R	mov dl,broj[edi]
+ 00000435  88 93 00030D94 R	mov outbuffer[ebx],dl
+ 0000043B  43			inc ebx
+ 0000043C  47			inc edi
+ 0000043D  66| FF 0D		dec cifra
+	   00081D50 R
+ 00000444  66| 83 3D		cmp cifra,0
+	   00081D50 R 00
+ 0000044C  75 E1		jnz Dodavanje
+ 0000044E  C6 83 00030D94 R	mov outbuffer[ebx],20h;// Ne povecavamo ebx, zato sto se to radi u labeli Sledeci.
+	   20
+ 00000455  EB 0F		jmp Sledeci
+
+ 00000457			KrajReda:
+ 00000457  C6 83 00030D94 R	mov outbuffer[ebx],0ah
+	   0A
+ 0000045E  8B C7		mov eax,edi;// U slucaju kada nije kraj reda, EAX cuva vrednost EDI, koju vracamo u labeli Sledeci.
+									 ;// Ako udjemo u labelu KrajReda smestanje se nece desiti pa to radimo ovde zbog kasnije zamene.
+ 00000460  FF 05 00081D52 R	inc brojac;// Jer ne treba da se smanjuje za kraj reda.
+
+ 00000466			Sledeci:
+ 00000466  43			inc ebx
+ 00000467  8B F8		mov edi,eax
+ 00000469  47			inc edi
+ 0000046A  47			inc edi
+
+ 0000046B  FF 0D 00081D52 R	dec brojac
+ 00000471  83 3D 00081D52 R	cmp brojac,0
+	   00
+ 00000478  0F 85 FFFFFF1F	jne NoviIzlazni
+
+				;// Upisujemo vrednosti binarizovane slike outbuffer-om u izlazni fajl.
+ 0000047E  A1 00061B24 R	mov  eax, outfileHandle
+ 00000483  BA 00030D94 R	mov  edx, OFFSET outbuffer
+ 00000488  B9 00030D40		mov  ecx,BUFFER_SIZE
+ 0000048D  E8 00000000 E	call WriteToFile
+
+ 00000492  C3			ret
+ 00000493			IzlazniFajl ENDP
+
+				;//										       MAIN
+				;// U glavnom programu se citava ulazna sliku i obradjuju se greske. Nako toga se pozivaju procedure pripreme i obrade slike. 
+
+
+ 00000493			main PROC
+
+				mWrite <"Unesite naziv slike u formatu naziv.pgm: ">
+ 00081D95		     1		.data		
+ 00081D95 55 6E 65 73 69     1		??0002 BYTE "Unesite naziv slike u formatu naziv.pgm: ",0	
+	   74 65 20 6E 61
+	   7A 69 76 20 73
+	   6C 69 6B 65 20
+	   75 20 66 6F 72
+	   6D 61 74 75 20
+	   6E 61 7A 69 76
+	   2E 70 67 6D 3A
+	   20 00
+ 00000493		     1		.code
+ 00000493  52		     1		push	edx
+ 00000494  BA 00081D95 R     1		mov	edx,OFFSET ??0002
+ 00000499  E8 00000000 E     1		call	WriteString
+ 0000049E  5A		     1		pop	edx
+ 0000049F  BA 00030D40 R	mov	edx,OFFSET filename
+ 000004A4  B9 00000050		mov	ecx,SIZEOF filename
+ 000004A9  E8 00000000 E	call ReadString
+
+ 000004AE  BA 00030D40 R	mov	edx,OFFSET filename
+ 000004B3  E8 00000000 E	call OpenInputFile
+ 000004B8  A3 00030D90 R	mov	fileHandle,eax
+
+ 000004BD  83 F8 FF		cmp	eax,INVALID_HANDLE_VALUE
+ 000004C0  75 13		jne	file_ok
+				mWrite <"Greska pri otvaranju fajla.",0dh,0ah>
+ 00081DBF		     1		.data		
+ 00081DBF 47 72 65 73 6B     1		??0003 BYTE "Greska pri otvaranju fajla.",0dh,0ah,0	
+	   61 20 70 72 69
+	   20 6F 74 76 61
+	   72 61 6E 6A 75
+	   20 66 61 6A 6C
+	   61 2E 0D 0A 00
+ 000004C2		     1		.code
+ 000004C2  52		     1		push	edx
+ 000004C3  BA 00081DBF R     1		mov	edx,OFFSET ??0003
+ 000004C8  E8 00000000 E     1		call	WriteString
+ 000004CD  5A		     1		pop	edx
+ 000004CE  E8 00000000 E	call WriteWindowsMsg
+ 000004D3  EB 7F		jmp	quit
+
+ 000004D5			file_ok:
+ 000004D5  BA 00000000 R	mov	edx,OFFSET buffer
+ 000004DA  B9 00030D40		mov	ecx,BUFFER_SIZE
+ 000004DF  E8 00000000 E	call ReadFromFile
+ 000004E4  73 1D		jnc	check_buffer_size
+
+				mWrite <"Greska pri citanju fajla. ",0dh,0ah>
+ 00081DDD		     1		.data		
+ 00081DDD 47 72 65 73 6B     1		??0004 BYTE "Greska pri citanju fajla. ",0dh,0ah,0	
+	   61 20 70 72 69
+	   20 63 69 74 61
+	   6E 6A 75 20 66
+	   61 6A 6C 61 2E
+	   20 0D 0A 00
+ 000004E6		     1		.code
+ 000004E6  52		     1		push	edx
+ 000004E7  BA 00081DDD R     1		mov	edx,OFFSET ??0004
+ 000004EC  E8 00000000 E     1		call	WriteString
+ 000004F1  5A		     1		pop	edx
+ 000004F2  E8 00000000 E	call WriteWindowsMsg
+ 000004F7  A1 00030D90 R	mov eax, fileHandle
+ 000004FC  E8 FFFFFAFF		call	close_file
+ 00000501  EB 51		jmp quit
+
+ 00000503			check_buffer_size:
+ 00000503  3D 00030D40		cmp	eax,BUFFER_SIZE
+ 00000508  76 1D		jbe	buf_size_ok
+
+				mWrite <"Greska: Dimenzije slike su neodgovarajuce.",0dh,0ah>
+ 00081DFA		     1		.data		
+ 00081DFA 47 72 65 73 6B     1		??0005 BYTE "Greska: Dimenzije slike su neodgovarajuce.",0dh,0ah,0	
+	   61 3A 20 44 69
+	   6D 65 6E 7A 69
+	   6A 65 20 73 6C
+	   69 6B 65 20 73
+	   75 20 6E 65 6F
+	   64 67 6F 76 61
+	   72 61 6A 75 63
+	   65 2E 0D 0A 00
+ 0000050A		     1		.code
+ 0000050A  52		     1		push	edx
+ 0000050B  BA 00081DFA R     1		mov	edx,OFFSET ??0005
+ 00000510  E8 00000000 E     1		call	WriteString
+ 00000515  5A		     1		pop	edx
+ 00000516  E8 00000000 E	call WriteWindowsMsg
+ 0000051B  A1 00030D90 R	mov eax, fileHandle
+ 00000520  E8 FFFFFADB		call	close_file
+ 00000525  EB 2D		jmp quit
+
+ 00000527			buf_size_ok:
+ 00000527  A3 00061B2E R	mov velicinaBafera,eax
+
+ 0000052C  E8 FFFFFC45		call Ucitavanje
+ 00000531  E8 FFFFFD13		call FormiranjeHistograma
+ 00000536  E8 FFFFFD64		call ObradaSlike
+ 0000053B  E8 FFFFFDBA		call IzlazniFajl
+
+
+ 00000540  A1 00061B24 R	mov  eax,outfileHandle
+ 00000545  E8 00000000 E	call CloseFile
+
+ 0000054A  A1 00030D90 R	mov	eax,fileHandle
+ 0000054F  E8 00000000 E	call CloseFile
+
+ 00000554			quit:
+				exit
+ 00000554  6A 00	   *	    push   +000000000h
+ 00000556  E8 00000000 E   *	    call   ExitProcess
+ 0000055B			main ENDP
+				END main
+Microsoft (R) Macro Assembler Version 14.10.25019.0	    06/25/17 22:29:25
+Debug\Projekat.asm					     Symbols 2 - 1
+
+
+
+
+Macros:
+
+                N a m e                 Type
+
+IsDefined  . . . . . . . . . . .	Func
+Startup  . . . . . . . . . . . .	Proc
+mDumpMem . . . . . . . . . . . .	Proc
+mDump  . . . . . . . . . . . . .	Proc
+mGotoxy  . . . . . . . . . . . .	Proc
+mReadString  . . . . . . . . . .	Proc
+mShowRegister  . . . . . . . . .	Proc
+mShow  . . . . . . . . . . . . .	Proc
+mWriteLn . . . . . . . . . . . .	Proc
+mWriteSpace  . . . . . . . . . .	Proc
+mWriteString . . . . . . . . . .	Proc
+mWrite . . . . . . . . . . . . .	Proc
+
+
+Structures and Unions:
+
+                N a m e                  Size
+                                         Offset      Type
+
+CONSOLE_CURSOR_INFO  . . . . . .	 00000008
+  dwSize . . . . . . . . . . . .	 00000000	 DWord
+  bVisible . . . . . . . . . . .	 00000004	 DWord
+CONSOLE_SCREEN_BUFFER_INFO . . .	 00000016
+  dwSize . . . . . . . . . . . .	 00000000	 DWord
+  dwCursorPosition . . . . . . .	 00000004	 DWord
+  wAttributes  . . . . . . . . .	 00000008	 Word
+  srWindow . . . . . . . . . . .	 0000000A	 QWord
+  dwMaximumWindowSize  . . . . .	 00000012	 DWord
+COORD  . . . . . . . . . . . . .	 00000004
+  X  . . . . . . . . . . . . . .	 00000000	 Word
+  Y  . . . . . . . . . . . . . .	 00000002	 Word
+FILETIME . . . . . . . . . . . .	 00000008
+  loDateTime . . . . . . . . . .	 00000000	 DWord
+  hiDateTime . . . . . . . . . .	 00000004	 DWord
+FOCUS_EVENT_RECORD . . . . . . .	 00000004
+  bSetFocus  . . . . . . . . . .	 00000000	 DWord
+FPU_ENVIRON  . . . . . . . . . .	 0000001C
+  controlWord  . . . . . . . . .	 00000000	 Word
+  statusWord . . . . . . . . . .	 00000004	 Word
+  tagWord  . . . . . . . . . . .	 00000008	 Word
+  instrPointerOffset . . . . . .	 0000000C	 DWord
+  instrPointerSelector . . . . .	 00000010	 DWord
+  operandPointerOffset . . . . .	 00000014	 DWord
+  operandPointerSelector . . . .	 00000018	 Word
+INPUT_RECORD . . . . . . . . . .	 00000014
+  EventType  . . . . . . . . . .	 00000000	 Word
+  Event  . . . . . . . . . . . .	 00000004	 XmmWord
+  bKeyDown . . . . . . . . . . .	 00000000	 DWord
+  wRepeatCount . . . . . . . . .	 00000004	 Word
+  wVirtualKeyCode  . . . . . . .	 00000006	 Word
+  wVirtualScanCode . . . . . . .	 00000008	 Word
+  uChar  . . . . . . . . . . . .	 0000000A	 Word
+  UnicodeChar  . . . . . . . . .	 00000000	 Word
+  AsciiChar  . . . . . . . . . .	 00000000	 Byte
+  dwControlKeyState  . . . . . .	 0000000C	 DWord
+  dwMousePosition  . . . . . . .	 00000000	 DWord
+  dwButtonState  . . . . . . . .	 00000004	 DWord
+  dwMouseControlKeyState . . . .	 00000008	 DWord
+  dwEventFlags . . . . . . . . .	 0000000C	 DWord
+  dwSize . . . . . . . . . . . .	 00000000	 DWord
+  dwCommandId  . . . . . . . . .	 00000000	 DWord
+  bSetFocus  . . . . . . . . . .	 00000000	 DWord
+KEY_EVENT_RECORD . . . . . . . .	 00000010
+  bKeyDown . . . . . . . . . . .	 00000000	 DWord
+  wRepeatCount . . . . . . . . .	 00000004	 Word
+  wVirtualKeyCode  . . . . . . .	 00000006	 Word
+  wVirtualScanCode . . . . . . .	 00000008	 Word
+  uChar  . . . . . . . . . . . .	 0000000A	 Word
+  UnicodeChar  . . . . . . . . .	 00000000	 Word
+  AsciiChar  . . . . . . . . . .	 00000000	 Byte
+  dwControlKeyState  . . . . . .	 0000000C	 DWord
+MENU_EVENT_RECORD  . . . . . . .	 00000004
+  dwCommandId  . . . . . . . . .	 00000000	 DWord
+MOUSE_EVENT_RECORD . . . . . . .	 00000010
+  dwMousePosition  . . . . . . .	 00000000	 DWord
+  dwButtonState  . . . . . . . .	 00000004	 DWord
+  dwMouseControlKeyState . . . .	 00000008	 DWord
+  dwEventFlags . . . . . . . . .	 0000000C	 DWord
+SMALL_RECT . . . . . . . . . . .	 00000008
+  Left . . . . . . . . . . . . .	 00000000	 Word
+  Top  . . . . . . . . . . . . .	 00000002	 Word
+  Right  . . . . . . . . . . . .	 00000004	 Word
+  Bottom . . . . . . . . . . . .	 00000006	 Word
+SYSTEMTIME . . . . . . . . . . .	 00000010
+  wYear  . . . . . . . . . . . .	 00000000	 Word
+  wMonth . . . . . . . . . . . .	 00000002	 Word
+  wDayOfWeek . . . . . . . . . .	 00000004	 Word
+  wDay . . . . . . . . . . . . .	 00000006	 Word
+  wHour  . . . . . . . . . . . .	 00000008	 Word
+  wMinute  . . . . . . . . . . .	 0000000A	 Word
+  wSecond  . . . . . . . . . . .	 0000000C	 Word
+  wMilliseconds  . . . . . . . .	 0000000E	 Word
+WINDOW_BUFFER_SIZE_RECORD  . . .	 00000004
+  dwSize . . . . . . . . . . . .	 00000000	 DWord
+
+
+Segments and Groups:
+
+                N a m e                 Size     Length   Align   Combine Class
+
+CONST  . . . . . . . . . . . . .	32 Bit	 00000000 Para	  Public  'CONST'	 ReadOnly
+FLAT . . . . . . . . . . . . . .	GROUP
+STACK  . . . . . . . . . . . . .	32 Bit	 00001000 Para	  Stack	  'STACK'	 
+_DATA  . . . . . . . . . . . . .	32 Bit	 00081E27 Para	  Public  'DATA'	
+_TEXT  . . . . . . . . . . . . .	32 Bit	 0000055B Para	  Public  'CODE'	
+
+
+Procedures, parameters, and locals:
+
+                N a m e                 Type     Value    Attr
+
+Citaj  . . . . . . . . . . . . .	P Near	 00000011 _TEXT	Length= 0000004A Public STDCALL
+  Ucitavanje . . . . . . . . . .	L Near	 00000025 _TEXT	
+  Pretvaranje  . . . . . . . . .	L Near	 0000003F _TEXT	
+CloseFile  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+CloseHandle  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Clrscr . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+CreateFileA  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+CreateOutputFile . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Crlf . . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Delay  . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+DumpMem  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+DumpRegs . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ExitProcess  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+FileTimeToDosDateTime  . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+FileTimeToSystemTime . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+FlushConsoleInputBuffer  . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+FormatMessageA . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+FormiranjeHistograma . . . . . .	P Near	 00000249 _TEXT	Length= 00000056 Public STDCALL
+  Petlja . . . . . . . . . . . .	L Near	 0000025C _TEXT	
+  Nastavi  . . . . . . . . . . .	L Near	 0000029A _TEXT	
+GetCommandLineA  . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetCommandTail . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetConsoleCP . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetConsoleCursorInfo . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetConsoleMode . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetConsoleScreenBufferInfo . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetDateTime  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetFileTime  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetKeyState  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetLastError . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetLocalTime . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetMaxXY . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetMseconds  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetNumberOfConsoleInputEvents  .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetProcessHeap . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetStdHandle . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetSystemTime  . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetTextColor . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetTickCount . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Gotoxy . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapAlloc  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapCreate . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapDestroy  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapFree . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapSize . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+IsDigit  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+IzlazniFajl  . . . . . . . . . .	P Near	 000002FA _TEXT	Length= 00000199 Public STDCALL
+  NoviPixeli . . . . . . . . . .	L Near	 00000317 _TEXT	
+  Belo . . . . . . . . . . . . .	L Near	 00000349 _TEXT	
+  VrednostNovogReda  . . . . . .	L Near	 00000356 _TEXT	
+  SledeciPix . . . . . . . . . .	L Near	 0000035C _TEXT	
+  Gotovo . . . . . . . . . . . .	L Near	 0000036D _TEXT	
+  NoviIzlazni  . . . . . . . . .	L Near	 0000039D _TEXT	
+  Trocifren  . . . . . . . . . .	L Near	 000003BD _TEXT	
+  Dvocifren  . . . . . . . . . .	L Near	 000003EB _TEXT	
+  Jednocifren  . . . . . . . . .	L Near	 00000415 _TEXT	
+  Ispis  . . . . . . . . . . . .	L Near	 00000427 _TEXT	
+  Dodavanje  . . . . . . . . . .	L Near	 0000042F _TEXT	
+  KrajReda . . . . . . . . . . .	L Near	 00000457 _TEXT	
+  Sledeci  . . . . . . . . . . .	L Near	 00000466 _TEXT	
+LocalFree  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+MessageBoxA  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+MsgBoxAsk  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+MsgBox . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+NadjiPrag  . . . . . . . . . . .	P Near	 0000005B _TEXT	Length= 0000011B Public STDCALL
+  Manji  . . . . . . . . . . . .	L Near	 0000008D _TEXT	
+  Veci1  . . . . . . . . . . . .	L Near	 000000BC _TEXT	
+  SveNule  . . . . . . . . . . .	L Near	 000000E1 _TEXT	
+  Petlja . . . . . . . . . . . .	L Near	 000000F6 _TEXT	
+  Veci . . . . . . . . . . . . .	L Near	 0000010A _TEXT	
+  Dalje  . . . . . . . . . . . .	L Near	 00000134 _TEXT	
+ObradaSlike  . . . . . . . . . .	P Near	 0000029F _TEXT	Length= 0000005B Public STDCALL
+  Obrada . . . . . . . . . . . .	L Near	 000002A9 _TEXT	
+  Opada  . . . . . . . . . . . .	L Near	 000002BE _TEXT	
+  Raste  . . . . . . . . . . . .	L Near	 000002E0 _TEXT	
+  Kraj . . . . . . . . . . . . .	L Near	 000002F9 _TEXT	
+OpenInputFile  . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ParseDecimal32 . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ParseInteger32 . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+PeekConsoleInputA  . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Random32 . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+RandomRange  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Randomize  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadChar . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadConsoleA . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadConsoleInputA  . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadDec  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadFile . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadFloat  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadFromFile . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadHex  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadInt  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadKeyFlush . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadKey  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadString . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleCursorInfo . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleCursorPosition . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleMode . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleScreenBufferSize . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleTextAttribute  . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleTitleA . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleWindowInfo . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetFilePointer . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetLocalTime . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetTextColor . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ShowFPUStack . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Sleep  . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+StrLength  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_compare  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_copy . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_length . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_trim . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_ucase  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SystemTimeToFileTime . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Ucitavanje . . . . . . . . . . .	P Near	 00000176 _TEXT	Length= 000000D3 Public STDCALL
+  DrugiRed . . . . . . . . . . .	L Near	 000001A9 _TEXT	
+  Komentar . . . . . . . . . . .	L Near	 000001B3 _TEXT	
+  TreciRed . . . . . . . . . . .	L Near	 000001C1 _TEXT	
+  Prepisivanje . . . . . . . . .	L Near	 0000021F _TEXT	
+WaitMsg  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteBinB  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteBin . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteChar  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteConsoleA  . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteConsoleOutputAttribute  . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteConsoleOutputCharacterA . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteDec . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteFile  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteFloat . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteHexB  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteHex . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteInt . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteStackFrameName  . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteStackFrame  . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteString  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteToFile  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteWindowsMsg  . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+close_file . . . . . . . . . . .	P Near	 00000000 _TEXT	Length= 00000011 Public STDCALL
+main . . . . . . . . . . . . . .	P Near	 00000493 _TEXT	Length= 000000C8 Public STDCALL
+  file_ok  . . . . . . . . . . .	L Near	 000004D5 _TEXT	
+  check_buffer_size  . . . . . .	L Near	 00000503 _TEXT	
+  buf_size_ok  . . . . . . . . .	L Near	 00000527 _TEXT	
+  quit . . . . . . . . . . . . .	L Near	 00000554 _TEXT	
+printf . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External C
+scanf  . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External C
+wsprintfA  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External C
+
+
+Symbols:
+
+                N a m e                 Type     Value    Attr
+
+??0000 . . . . . . . . . . . . .	Byte	 00081D56 _DATA	
+??0001 . . . . . . . . . . . . .	Byte	 00081D70 _DATA	
+??0002 . . . . . . . . . . . . .	Byte	 00081D95 _DATA	
+??0003 . . . . . . . . . . . . .	Byte	 00081DBF _DATA	
+??0004 . . . . . . . . . . . . .	Byte	 00081DDD _DATA	
+??0005 . . . . . . . . . . . . .	Byte	 00081DFA _DATA	
+@CodeSize  . . . . . . . . . . .	Number	 00000000h   
+@DataSize  . . . . . . . . . . .	Number	 00000000h   
+@Interface . . . . . . . . . . .	Number	 00000003h   
+@Model . . . . . . . . . . . . .	Number	 00000007h   
+@code  . . . . . . . . . . . . .	Text   	 _TEXT
+@data  . . . . . . . . . . . . .	Text   	 FLAT
+@fardata?  . . . . . . . . . . .	Text   	 FLAT
+@fardata . . . . . . . . . . . .	Text   	 FLAT
+@stack . . . . . . . . . . . . .	Text   	 FLAT
+ALT_MASK . . . . . . . . . . . .	Number	 00000003h   
+BUFFER_SIZE  . . . . . . . . . .	Number	 00030D40h   
+CAPSLOCK_ON  . . . . . . . . . .	Number	 00000080h   
+CREATE_ALWAYS  . . . . . . . . .	Number	 00000002h   
+CREATE_NEW . . . . . . . . . . .	Number	 00000001h   
+CTRL_MASK  . . . . . . . . . . .	Number	 0000000Ch   
+CreateFile . . . . . . . . . . .	Text   	 CreateFileA
+DO_NOT_SHARE . . . . . . . . . .	Number	 00000000h   
+ENABLE_ECHO_INPUT  . . . . . . .	Number	 00000004h   
+ENABLE_LINE_INPUT  . . . . . . .	Number	 00000002h   
+ENABLE_MOUSE_INPUT . . . . . . .	Number	 00000010h   
+ENABLE_PROCESSED_INPUT . . . . .	Number	 00000001h   
+ENABLE_PROCESSED_OUTPUT  . . . .	Number	 00000001h   
+ENABLE_WINDOW_INPUT  . . . . . .	Number	 00000008h   
+ENABLE_WRAP_AT_EOL_OUTPUT  . . .	Number	 00000002h   
+ENHANCED_KEY . . . . . . . . . .	Number	 00000100h   
+FALSE  . . . . . . . . . . . . .	Number	 00000000h   
+FILE_APPEND_DATA . . . . . . . .	Number	 00000004h   
+FILE_ATTRIBUTE_ARCHIVE . . . . .	Number	 00000020h   
+FILE_ATTRIBUTE_COMPRESSED  . . .	Number	 00000800h   
+FILE_ATTRIBUTE_DEVICE  . . . . .	Number	 00000040h   
+FILE_ATTRIBUTE_DIRECTORY . . . .	Number	 00000010h   
+FILE_ATTRIBUTE_ENCRYPTED . . . .	Number	 00004000h   
+FILE_ATTRIBUTE_HIDDEN  . . . . .	Number	 00000002h   
+FILE_ATTRIBUTE_NORMAL  . . . . .	Number	 00000080h   
+FILE_ATTRIBUTE_NOT_CONTENT_INDEXED .	Number	 00002000h   
+FILE_ATTRIBUTE_OFFLINE . . . . .	Number	 00001000h   
+FILE_ATTRIBUTE_READONLY  . . . .	Number	 00000001h   
+FILE_ATTRIBUTE_REPARSE_POINT . .	Number	 00000400h   
+FILE_ATTRIBUTE_SPARSE_FILE . . .	Number	 00000200h   
+FILE_ATTRIBUTE_SYSTEM  . . . . .	Number	 00000004h   
+FILE_ATTRIBUTE_TEMPORARY . . . .	Number	 00000100h   
+FILE_BEGIN . . . . . . . . . . .	Number	 00000000h   
+FILE_CURRENT . . . . . . . . . .	Number	 00000001h   
+FILE_DELETE_CHILD  . . . . . . .	Number	 00000040h   
+FILE_END . . . . . . . . . . . .	Number	 00000002h   
+FILE_READ_DATA . . . . . . . . .	Number	 00000001h   
+FILE_SHARE_DELETE  . . . . . . .	Number	 00000004h   
+FILE_SHARE_READ  . . . . . . . .	Number	 00000001h   
+FILE_SHARE_WRITE . . . . . . . .	Number	 00000002h   
+FILE_WRITE_DATA  . . . . . . . .	Number	 00000002h   
+FOCUS_EVENT  . . . . . . . . . .	Number	 00000010h   
+FORMAT_MESSAGE_ALLOCATE_BUFFER .	Number	 00000100h   
+FORMAT_MESSAGE_FROM_SYSTEM . . .	Number	 00001000h   
+FormatMessage  . . . . . . . . .	Text   	 FormatMessageA
+GENERIC_ALL  . . . . . . . . . .	Number	 10000000h   
+GENERIC_EXECUTE  . . . . . . . .	Number	 20000000h   
+GENERIC_READ . . . . . . . . . .	Number	 -80000000h   
+GENERIC_WRITE  . . . . . . . . .	Number	 40000000h   
+GetCommandLine . . . . . . . . .	Text   	 GetCommandLineA
+HANDLE . . . . . . . . . . . . .	Text   	 DWORD
+HEAP_GENERATE_EXCEPTIONS . . . .	Number	 00000004h   
+HEAP_GROWABLE  . . . . . . . . .	Number	 00000002h   
+HEAP_NO_SERIALIZE  . . . . . . .	Number	 00000001h   
+HEAP_REALLOC_IN_PLACE_ONLY . . .	Number	 00000010h   
+HEAP_ZERO_MEMORY . . . . . . . .	Number	 00000008h   
+IDABORT  . . . . . . . . . . . .	Number	 00000003h   
+IDCANCEL . . . . . . . . . . . .	Number	 00000002h   
+IDCLOSE  . . . . . . . . . . . .	Number	 00000008h   
+IDCONTINUE . . . . . . . . . . .	Number	 0000000Bh   
+IDHELP . . . . . . . . . . . . .	Number	 00000009h   
+IDIGNORE . . . . . . . . . . . .	Number	 00000005h   
+IDNO . . . . . . . . . . . . . .	Number	 00000007h   
+IDOK . . . . . . . . . . . . . .	Number	 00000001h   
+IDRETRY  . . . . . . . . . . . .	Number	 00000004h   
+IDTIMEOUT  . . . . . . . . . . .	Number	 00007D00h   
+IDTRYAGAIN . . . . . . . . . . .	Number	 0000000Ah   
+IDYES  . . . . . . . . . . . . .	Number	 00000006h   
+INITIAL_T  . . . . . . . . . . .	Number	 00000100h   
+INVALID_HANDLE_VALUE . . . . . .	Number	 -00000001h   
+KBDOWN_FLAG  . . . . . . . . . .	Number	 00000001h   
+KEY_EVENT  . . . . . . . . . . .	Number	 00000001h   
+KEY_MASKS  . . . . . . . . . . .	Number	 0000001Fh   
+LEFT_ALT_PRESSED . . . . . . . .	Number	 00000002h   
+LEFT_CTRL_PRESSED  . . . . . . .	Number	 00000008h   
+Lmax . . . . . . . . . . . . . .	Word	 00061B36 _DATA	
+MAX_PICTURE_SIZE . . . . . . . .	Number	 00010000h   
+MB_ABORTRETRYIGNORE  . . . . . .	Number	 00000002h   
+MB_APPLMODAL . . . . . . . . . .	Number	 00000000h   
+MB_CANCELTRYCONTINUE . . . . . .	Number	 00000006h   
+MB_DEFBUTTON1  . . . . . . . . .	Number	 00000000h   
+MB_DEFBUTTON2  . . . . . . . . .	Number	 00000100h   
+MB_DEFBUTTON3  . . . . . . . . .	Number	 00000200h   
+MB_DEFBUTTON4  . . . . . . . . .	Number	 00000300h   
+MB_HELP  . . . . . . . . . . . .	Number	 00004000h   
+MB_ICONASTERISK  . . . . . . . .	Number	 00000040h   
+MB_ICONERROR . . . . . . . . . .	Number	 00000010h   
+MB_ICONEXCLAMATION . . . . . . .	Number	 00000030h   
+MB_ICONHAND  . . . . . . . . . .	Number	 00000010h   
+MB_ICONINFORMATION . . . . . . .	Number	 00000040h   
+MB_ICONQUESTION  . . . . . . . .	Number	 00000020h   
+MB_ICONSTOP  . . . . . . . . . .	Number	 00000010h   
+MB_ICONWARNING . . . . . . . . .	Number	 00000030h   
+MB_OKCANCEL  . . . . . . . . . .	Number	 00000001h   
+MB_OK  . . . . . . . . . . . . .	Number	 00000000h   
+MB_RETRYCANCEL . . . . . . . . .	Number	 00000005h   
+MB_SYSTEMMODAL . . . . . . . . .	Number	 00001000h   
+MB_TASKMODAL . . . . . . . . . .	Number	 00002000h   
+MB_USERICON  . . . . . . . . . .	Number	 00000080h   
+MB_YESNOCANCEL . . . . . . . . .	Number	 00000003h   
+MB_YESNO . . . . . . . . . . . .	Number	 00000004h   
+MENU_EVENT . . . . . . . . . . .	Number	 00000008h   
+MOUSE_EVENT  . . . . . . . . . .	Number	 00000002h   
+MessageBox . . . . . . . . . . .	Text   	 MessageBoxA
+M  . . . . . . . . . . . . . . .	Word	 00061B32 _DATA	
+NULL . . . . . . . . . . . . . .	Number	 00000000h   
+NUMLOCK_ON . . . . . . . . . . .	Number	 00000020h   
+N  . . . . . . . . . . . . . . .	Word	 00061B34 _DATA	
+OPEN_ALWAYS  . . . . . . . . . .	Number	 00000004h   
+OPEN_EXISTING  . . . . . . . . .	Number	 00000003h   
+P2 . . . . . . . . . . . . . . .	Word	 00061B2C _DATA	
+PRAG . . . . . . . . . . . . . .	Number	 00000001h   
+PeekConsoleInput . . . . . . . .	Text   	 PeekConsoleInputA
+RIGHT_ALT_PRESSED  . . . . . . .	Number	 00000001h   
+RIGHT_CTRL_PRESSED . . . . . . .	Number	 00000004h   
+ReadConsoleInput . . . . . . . .	Text   	 ReadConsoleInputA
+ReadConsole  . . . . . . . . . .	Text   	 ReadConsoleA
+SCROLLLOCK_ON  . . . . . . . . .	Number	 00000040h   
+SHIFT_MASK . . . . . . . . . . .	Number	 00000010h   
+SHIFT_PRESSED  . . . . . . . . .	Number	 00000010h   
+STD_ERROR_HANDLE . . . . . . . .	Number	 -0000000Ch   
+STD_INPUT_HANDLE . . . . . . . .	Number	 -0000000Ah   
+STD_OUTPUT_HANDLE  . . . . . . .	Number	 -0000000Bh   
+SetConsoleTitle  . . . . . . . .	Text   	 SetConsoleTitleA
+T1 . . . . . . . . . . . . . . .	Word	 00081D46 _DATA	
+T2 . . . . . . . . . . . . . . .	Word	 00081D48 _DATA	
+T3 . . . . . . . . . . . . . . .	Word	 00081D4A _DATA	
+TAB  . . . . . . . . . . . . . .	Number	 00000009h   
+TRUE . . . . . . . . . . . . . .	Number	 00000001h   
+TRUNCATE_EXISTING  . . . . . . .	Number	 00000005h   
+T  . . . . . . . . . . . . . . .	Word	 00081D44 _DATA	
+VK_11  . . . . . . . . . . . . .	Number	 000000BDh   
+VK_12  . . . . . . . . . . . . .	Number	 000000BBh   
+VK_ADD . . . . . . . . . . . . .	Number	 0000006Bh   
+VK_BACK  . . . . . . . . . . . .	Number	 00000008h   
+VK_CANCEL  . . . . . . . . . . .	Number	 00000003h   
+VK_CAPITAL . . . . . . . . . . .	Number	 00000014h   
+VK_CLEAR . . . . . . . . . . . .	Number	 0000000Ch   
+VK_CONTROL . . . . . . . . . . .	Number	 00000011h   
+VK_DECIMAL . . . . . . . . . . .	Number	 0000006Eh   
+VK_DELETE  . . . . . . . . . . .	Number	 0000002Eh   
+VK_DIVIDE  . . . . . . . . . . .	Number	 0000006Fh   
+VK_DOWN  . . . . . . . . . . . .	Number	 00000028h   
+VK_END . . . . . . . . . . . . .	Number	 00000023h   
+VK_ESCAPE  . . . . . . . . . . .	Number	 0000001Bh   
+VK_EXECUTE . . . . . . . . . . .	Number	 0000002Bh   
+VK_F10 . . . . . . . . . . . . .	Number	 00000079h   
+VK_F11 . . . . . . . . . . . . .	Number	 0000007Ah   
+VK_F12 . . . . . . . . . . . . .	Number	 0000007Bh   
+VK_F13 . . . . . . . . . . . . .	Number	 0000007Ch   
+VK_F14 . . . . . . . . . . . . .	Number	 0000007Dh   
+VK_F15 . . . . . . . . . . . . .	Number	 0000007Eh   
+VK_F16 . . . . . . . . . . . . .	Number	 0000007Fh   
+VK_F17 . . . . . . . . . . . . .	Number	 00000080h   
+VK_F18 . . . . . . . . . . . . .	Number	 00000081h   
+VK_F19 . . . . . . . . . . . . .	Number	 00000082h   
+VK_F1  . . . . . . . . . . . . .	Number	 00000070h   
+VK_F20 . . . . . . . . . . . . .	Number	 00000083h   
+VK_F21 . . . . . . . . . . . . .	Number	 00000084h   
+VK_F22 . . . . . . . . . . . . .	Number	 00000085h   
+VK_F23 . . . . . . . . . . . . .	Number	 00000086h   
+VK_F24 . . . . . . . . . . . . .	Number	 00000087h   
+VK_F2  . . . . . . . . . . . . .	Number	 00000071h   
+VK_F3  . . . . . . . . . . . . .	Number	 00000072h   
+VK_F4  . . . . . . . . . . . . .	Number	 00000073h   
+VK_F5  . . . . . . . . . . . . .	Number	 00000074h   
+VK_F6  . . . . . . . . . . . . .	Number	 00000075h   
+VK_F7  . . . . . . . . . . . . .	Number	 00000076h   
+VK_F8  . . . . . . . . . . . . .	Number	 00000077h   
+VK_F9  . . . . . . . . . . . . .	Number	 00000078h   
+VK_HELP  . . . . . . . . . . . .	Number	 0000002Fh   
+VK_HOME  . . . . . . . . . . . .	Number	 00000024h   
+VK_INSERT  . . . . . . . . . . .	Number	 0000002Dh   
+VK_LBUTTON . . . . . . . . . . .	Number	 00000001h   
+VK_LCONTROL  . . . . . . . . . .	Number	 000000A2h   
+VK_LEFT  . . . . . . . . . . . .	Number	 00000025h   
+VK_LMENU . . . . . . . . . . . .	Number	 000000A4h   
+VK_LSHIFT  . . . . . . . . . . .	Number	 000000A0h   
+VK_MENU  . . . . . . . . . . . .	Number	 00000012h   
+VK_MULTIPLY  . . . . . . . . . .	Number	 0000006Ah   
+VK_NEXT  . . . . . . . . . . . .	Number	 00000022h   
+VK_NUMLOCK . . . . . . . . . . .	Number	 00000090h   
+VK_NUMPAD0 . . . . . . . . . . .	Number	 00000060h   
+VK_NUMPAD1 . . . . . . . . . . .	Number	 00000061h   
+VK_NUMPAD2 . . . . . . . . . . .	Number	 00000062h   
+VK_NUMPAD3 . . . . . . . . . . .	Number	 00000063h   
+VK_NUMPAD4 . . . . . . . . . . .	Number	 00000064h   
+VK_NUMPAD5 . . . . . . . . . . .	Number	 00000065h   
+VK_NUMPAD6 . . . . . . . . . . .	Number	 00000066h   
+VK_NUMPAD7 . . . . . . . . . . .	Number	 00000067h   
+VK_NUMPAD8 . . . . . . . . . . .	Number	 00000068h   
+VK_NUMPAD9 . . . . . . . . . . .	Number	 00000069h   
+VK_PAUSE . . . . . . . . . . . .	Number	 00000013h   
+VK_PRINT . . . . . . . . . . . .	Number	 0000002Ah   
+VK_PRIOR . . . . . . . . . . . .	Number	 00000021h   
+VK_RBUTTON . . . . . . . . . . .	Number	 00000002h   
+VK_RCONTROL  . . . . . . . . . .	Number	 000000A3h   
+VK_RETURN  . . . . . . . . . . .	Number	 0000000Dh   
+VK_RIGHT . . . . . . . . . . . .	Number	 00000027h   
+VK_RMENU . . . . . . . . . . . .	Number	 000000A5h   
+VK_RSHIFT  . . . . . . . . . . .	Number	 000000A1h   
+VK_SCROLL  . . . . . . . . . . .	Number	 00000091h   
+VK_SEPARATER . . . . . . . . . .	Number	 0000006Ch   
+VK_SHIFT . . . . . . . . . . . .	Number	 00000010h   
+VK_SNAPSHOT  . . . . . . . . . .	Number	 0000002Ch   
+VK_SPACE . . . . . . . . . . . .	Number	 00000020h   
+VK_SUBTRACT  . . . . . . . . . .	Number	 0000006Dh   
+VK_TAB . . . . . . . . . . . . .	Number	 00000009h   
+VK_UP  . . . . . . . . . . . . .	Number	 00000026h   
+WINDOW_BUFFER_SIZE_EVENT . . . .	Number	 00000004h   
+WriteConsoleOutputCharacter  . .	Text   	 WriteConsoleOutputCharacterA
+WriteConsole . . . . . . . . . .	Text   	 WriteConsoleA
+black  . . . . . . . . . . . . .	Number	 00000000h   
+blue . . . . . . . . . . . . . .	Number	 00000001h   
+brojac . . . . . . . . . . . . .	DWord	 00081D52 _DATA	
+broj . . . . . . . . . . . . . .	Byte	 00081D4C _DATA	
+brown  . . . . . . . . . . . . .	Number	 00000006h   
+buffer . . . . . . . . . . . . .	Byte	 00000000 _DATA	
+cifra  . . . . . . . . . . . . .	Word	 00081D50 _DATA	
+cyan . . . . . . . . . . . . . .	Number	 00000003h   
+exit . . . . . . . . . . . . . .	Text   	 INVOKE ExitProcess,0
+fileHandle . . . . . . . . . . .	DWord	 00030D90 _DATA	
+filename . . . . . . . . . . . .	Byte	 00030D40 _DATA	
+gray . . . . . . . . . . . . . .	Number	 00000008h   
+green  . . . . . . . . . . . . .	Number	 00000002h   
+histogram  . . . . . . . . . . .	Word	 00061B44 _DATA	
+lightBlue  . . . . . . . . . . .	Number	 00000009h   
+lightCyan  . . . . . . . . . . .	Number	 0000000Bh   
+lightGray  . . . . . . . . . . .	Number	 00000007h   
+lightGreen . . . . . . . . . . .	Number	 0000000Ah   
+lightMagenta . . . . . . . . . .	Number	 0000000Dh   
+lightRed . . . . . . . . . . . .	Number	 0000000Ch   
+magenta  . . . . . . . . . . . .	Number	 00000005h   
+outbuffer  . . . . . . . . . . .	Byte	 00030D94 _DATA	
+outfileHandle  . . . . . . . . .	DWord	 00061B24 _DATA	
+outfilename  . . . . . . . . . .	Byte	 00061AD4 _DATA	
+outindex . . . . . . . . . . . .	DWord	 00061B28 _DATA	
+pixeli . . . . . . . . . . . . .	Word	 00061D44 _DATA	
+pokazivacNiza  . . . . . . . . .	DWord	 00061B38 _DATA	
+red  . . . . . . . . . . . . . .	Number	 00000004h   
+suma1  . . . . . . . . . . . . .	DWord	 00061B40 _DATA	
+suma . . . . . . . . . . . . . .	DWord	 00061B3C _DATA	
+velicinaBafera . . . . . . . . .	DWord	 00061B2E _DATA	
+white  . . . . . . . . . . . . .	Number	 0000000Fh   
+wsprintf . . . . . . . . . . . .	Text   	 wsprintfA
+yellow . . . . . . . . . . . . .	Number	 0000000Eh   
+
+	   0 Warnings
+	   0 Errors
